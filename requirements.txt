@@ -1,0 +1,12 @@
+# MongoDB Users Reader 依賴套件
+motor>=3.3.0
+python-dotenv>=1.0.0
+
+# PostgreSQL
+asyncpg>=0.29.0
+
+# Hyperliquid SDK
+hyperliquid-python-sdk>=0.9.0
+
+# Orderly SDK
+orderly-evm-connector-python>=1.0.0
