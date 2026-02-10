@@ -86,46 +86,75 @@ class PostgresManager:
         if not trades:
             return 0
 
-        sql = """
-            INSERT INTO hyperliquid_trades (
-                wallet_address, trade_id, tx_hash, symbol, order_id,
-                side, direction, price, quantity, fee, fee_token,
-                realized_pnl, is_taker, position_before, executed_at
-            ) VALUES (
-                $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15
+        rows = [
+            (
+                trade["wallet_address"],
+                trade["trade_id"],
+                trade.get("tx_hash"),
+                trade["symbol"],
+                trade.get("order_id"),
+                trade["side"],
+                trade.get("direction"),
+                Decimal(str(trade["price"])),
+                Decimal(str(trade["quantity"])),
+                Decimal(str(trade["fee"])) if trade.get("fee") is not None else None,
+                trade.get("fee_token"),
+                Decimal(str(trade["realized_pnl"])) if trade.get("realized_pnl") is not None else None,
+                trade.get("is_taker"),
+                Decimal(str(trade["position_before"])) if trade.get("position_before") is not None else None,
+                trade["executed_at"],
             )
-            ON CONFLICT (wallet_address, trade_id) DO NOTHING
-        """
+            for trade in trades
+        ]
+
+        BATCH_SIZE = 500
+        inserted = 0
 
         async with self.pool.acquire() as conn:
-            inserted = 0
-            for trade in trades:
+            for i in range(0, len(rows), BATCH_SIZE):
+                batch = rows[i:i + BATCH_SIZE]
                 try:
-                    result = await conn.execute(
-                        sql,
-                        trade["wallet_address"],
-                        trade["trade_id"],
-                        trade.get("tx_hash"),
-                        trade["symbol"],
-                        trade.get("order_id"),
-                        trade["side"],
-                        trade.get("direction"),
-                        Decimal(str(trade["price"])),
-                        Decimal(str(trade["quantity"])),
-                        Decimal(str(trade["fee"])) if trade.get("fee") is not None else None,
-                        trade.get("fee_token"),
-                        Decimal(str(trade["realized_pnl"])) if trade.get("realized_pnl") is not None else None,
-                        trade.get("is_taker"),
-                        Decimal(str(trade["position_before"])) if trade.get("position_before") is not None else None,
-                        trade["executed_at"],
+                    result = await conn.fetch(
+                        """
+                        INSERT INTO hyperliquid_trades (
+                            wallet_address, trade_id, tx_hash, symbol, order_id,
+                            side, direction, price, quantity, fee, fee_token,
+                            realized_pnl, is_taker, position_before, executed_at
+                        )
+                        SELECT u.* FROM unnest(
+                            $1::varchar[], $2::bigint[], $3::varchar[], $4::varchar[], $5::bigint[],
+                            $6::varchar[], $7::varchar[], $8::decimal[], $9::decimal[], $10::decimal[], $11::varchar[],
+                            $12::decimal[], $13::boolean[], $14::decimal[], $15::timestamptz[]
+                        ) AS u(
+                            wallet_address, trade_id, tx_hash, symbol, order_id,
+                            side, direction, price, quantity, fee, fee_token,
+                            realized_pnl, is_taker, position_before, executed_at
+                        )
+                        ON CONFLICT (wallet_address, trade_id) DO NOTHING
+                        RETURNING trade_id
+                        """,
+                        [r[0] for r in batch],
+                        [r[1] for r in batch],
+                        [r[2] for r in batch],
+                        [r[3] for r in batch],
+                        [r[4] for r in batch],
+                        [r[5] for r in batch],
+                        [r[6] for r in batch],
+                        [r[7] for r in batch],
+                        [r[8] for r in batch],
+                        [r[9] for r in batch],
+                        [r[10] for r in batch],
+                        [r[11] for r in batch],
+                        [r[12] for r in batch],
+                        [r[13] for r in batch],
+                        [r[14] for r in batch],
                     )
-                    # ON CONFLICT DO NOTHING 時，result 會是 "INSERT 0 0" 或 "INSERT 0 1"
-                    if "INSERT 0 1" in result:
-                        inserted += 1
+                    inserted += len(result)
+                    logger.info(f"批次寫入 Hyperliquid: {len(result)}/{len(batch)} 筆 (batch {i // BATCH_SIZE + 1})")
                 except Exception as e:
-                    logger.error(f"插入 Hyperliquid 交易失敗: {e}, trade_id={trade.get('trade_id')}")
+                    logger.error(f"批次寫入 Hyperliquid 失敗: {e}")
 
-            return inserted
+        return inserted
 
     async def get_hyperliquid_trades_count(self, wallet_address: str) -> int:
         """取得指定錢包的 Hyperliquid 交易紀錄數"""
@@ -153,43 +182,71 @@ class PostgresManager:
         if not trades:
             return 0
 
-        sql = """
-            INSERT INTO orderly_trades (
-                wallet_address, account_id, trade_id, symbol, order_id,
-                side, price, quantity, fee, fee_token,
-                realized_pnl, is_taker, executed_at
-            ) VALUES (
-                $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13
+        rows = [
+            (
+                trade["wallet_address"],
+                trade["account_id"],
+                trade["trade_id"],
+                trade["symbol"],
+                trade.get("order_id"),
+                trade["side"],
+                Decimal(str(trade["price"])),
+                Decimal(str(trade["quantity"])),
+                Decimal(str(trade["fee"])) if trade.get("fee") is not None else None,
+                trade.get("fee_token"),
+                Decimal(str(trade["realized_pnl"])) if trade.get("realized_pnl") is not None else None,
+                trade.get("is_taker"),
+                trade["executed_at"],
             )
-            ON CONFLICT (wallet_address, trade_id) DO NOTHING
-        """
+            for trade in trades
+        ]
+
+        BATCH_SIZE = 500
+        inserted = 0
 
         async with self.pool.acquire() as conn:
-            inserted = 0
-            for trade in trades:
+            for i in range(0, len(rows), BATCH_SIZE):
+                batch = rows[i:i + BATCH_SIZE]
                 try:
-                    result = await conn.execute(
-                        sql,
-                        trade["wallet_address"],
-                        trade["account_id"],
-                        trade["trade_id"],
-                        trade["symbol"],
-                        trade.get("order_id"),
-                        trade["side"],
-                        Decimal(str(trade["price"])),
-                        Decimal(str(trade["quantity"])),
-                        Decimal(str(trade["fee"])) if trade.get("fee") is not None else None,
-                        trade.get("fee_token"),
-                        Decimal(str(trade["realized_pnl"])) if trade.get("realized_pnl") is not None else None,
-                        trade.get("is_taker"),
-                        trade["executed_at"],
+                    result = await conn.fetch(
+                        """
+                        INSERT INTO orderly_trades (
+                            wallet_address, account_id, trade_id, symbol, order_id,
+                            side, price, quantity, fee, fee_token,
+                            realized_pnl, is_taker, executed_at
+                        )
+                        SELECT u.* FROM unnest(
+                            $1::varchar[], $2::varchar[], $3::bigint[], $4::varchar[], $5::bigint[],
+                            $6::varchar[], $7::decimal[], $8::decimal[], $9::decimal[], $10::varchar[],
+                            $11::decimal[], $12::boolean[], $13::timestamptz[]
+                        ) AS u(
+                            wallet_address, account_id, trade_id, symbol, order_id,
+                            side, price, quantity, fee, fee_token,
+                            realized_pnl, is_taker, executed_at
+                        )
+                        ON CONFLICT (account_id, trade_id) DO NOTHING
+                        RETURNING trade_id
+                        """,
+                        [r[0] for r in batch],
+                        [r[1] for r in batch],
+                        [r[2] for r in batch],
+                        [r[3] for r in batch],
+                        [r[4] for r in batch],
+                        [r[5] for r in batch],
+                        [r[6] for r in batch],
+                        [r[7] for r in batch],
+                        [r[8] for r in batch],
+                        [r[9] for r in batch],
+                        [r[10] for r in batch],
+                        [r[11] for r in batch],
+                        [r[12] for r in batch],
                     )
-                    if "INSERT 0 1" in result:
-                        inserted += 1
+                    inserted += len(result)
+                    logger.info(f"批次寫入 Orderly: {len(result)}/{len(batch)} 筆 (batch {i // BATCH_SIZE + 1})")
                 except Exception as e:
-                    logger.error(f"插入 Orderly 交易失敗: {e}, trade_id={trade.get('trade_id')}")
+                    logger.error(f"批次寫入 Orderly 失敗: {e}")
 
-            return inserted
+        return inserted
 
     async def get_orderly_trades_count(self, wallet_address: str) -> int:
         """取得指定錢包的 Orderly 交易紀錄數"""

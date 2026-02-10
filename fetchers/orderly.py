@@ -4,13 +4,13 @@ Orderly 交易資料抓取器
 
 import asyncio
 import logging
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import List, Dict, Any, Optional
 
 from orderly_evm_connector.rest import Rest
 
 from .base import BaseFetcher
-from ..models.trade import OrderlyTrade
+from models.trade import OrderlyTrade
 
 logger = logging.getLogger(__name__)
 
@@ -110,8 +110,7 @@ class OrderlyFetcher(BaseFetcher):
 
         while True:
             try:
-                # 使用同步 API，在 async 環境中使用 run_in_executor
-                loop = asyncio.get_event_loop()
+                loop = asyncio.get_running_loop()
                 response = await loop.run_in_executor(
                     None,
                     lambda: client.get_trades(
@@ -209,12 +208,12 @@ class OrderlyFetcher(BaseFetcher):
             交易紀錄列表
         """
         if since is None:
-            since = datetime(2025, 1, 1)
+            since = datetime(2025, 1, 1, tzinfo=timezone.utc)
 
         return await self.fetch_trades(
             wallet_address=wallet_address,
             start_time=since,
-            end_time=datetime.now(),
+            end_time=datetime.now(timezone.utc),
             orderly_key=orderly_key,
             orderly_secret=orderly_secret,
             account_id=account_id,

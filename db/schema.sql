@@ -16,7 +16,7 @@ CREATE TABLE IF NOT EXISTS hyperliquid_trades (
     symbol VARCHAR(32) NOT NULL,        -- Hyperliquid: coin
     order_id BIGINT,                    -- Hyperliquid: oid
     side VARCHAR(4) NOT NULL,           -- 統一: "BUY" / "SELL"
-    direction VARCHAR(10),              -- "LONG" / "SHORT"
+    direction VARCHAR(32),              -- "Open Long", "Close Short", "Long > Short", etc.
 
     -- 價格與數量
     price DECIMAL(32, 16) NOT NULL,     -- Hyperliquid: px
@@ -71,8 +71,8 @@ CREATE TABLE IF NOT EXISTS orderly_trades (
     executed_at TIMESTAMP WITH TIME ZONE NOT NULL, -- Orderly: created_time
     created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
 
-    -- 唯一約束 (去重)
-    UNIQUE(wallet_address, trade_id)
+    -- 唯一約束 (去重，同一 account 的 trade_id 不重複)
+    UNIQUE(account_id, trade_id)
 );
 
 -- 抓取狀態追蹤表 (用於增量抓取)

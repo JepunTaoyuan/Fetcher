@@ -3,7 +3,7 @@ Trade dataclass 定義
 """
 
 from dataclasses import dataclass, asdict
-from datetime import datetime
+from datetime import datetime, timezone
 from decimal import Decimal
 from typing import Optional, Dict, Any
 
@@ -63,13 +63,12 @@ class HyperliquidTrade:
         raw_side = data.get("side", "")
         side = "BUY" if raw_side == "B" else "SELL" if raw_side == "A" else raw_side
 
-        # 轉換 direction: 標準化為大寫
         raw_dir = data.get("dir", "")
-        direction = raw_dir.upper() if raw_dir else None
+        direction = raw_dir if raw_dir else None
 
-        # 轉換時間戳 (毫秒 -> datetime)
+        # 轉換時間戳 (毫秒 -> datetime, UTC)
         time_ms = data.get("time", 0)
-        executed_at = datetime.fromtimestamp(time_ms / 1000)
+        executed_at = datetime.fromtimestamp(time_ms / 1000, tz=timezone.utc)
 
         return cls(
             wallet_address=wallet_address,
@@ -137,9 +136,9 @@ class OrderlyTrade:
             "trade_id": int,        # 交易 ID (唯一)
         }
         """
-        # 轉換時間戳 (毫秒 -> datetime)
+        # 轉換時間戳 (毫秒 -> datetime, UTC)
         time_ms = data.get("created_time") or data.get("timestamp", 0)
-        executed_at = datetime.fromtimestamp(time_ms / 1000) if time_ms else datetime.now()
+        executed_at = datetime.fromtimestamp(time_ms / 1000, tz=timezone.utc) if time_ms else datetime.now(timezone.utc)
 
         # 確定交易 ID
         trade_id = data.get("trade_id") or data.get("id", 0)

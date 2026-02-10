@@ -4,18 +4,27 @@ Hyperliquid 交易資料抓取器
 
 import asyncio
 import logging
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import List, Dict, Any, Optional
 
 from hyperliquid.info import Info
 
 from .base import BaseFetcher
-from ..models.trade import HyperliquidTrade
+from models.trade import HyperliquidTrade
 
 logger = logging.getLogger(__name__)
 
 # 每次抓取的時間區間 (天)
 FETCH_INTERVAL_DAYS = 30
+
+# 單次回傳上限，超過則需要縮短時間區間重試
+FILLS_LIMIT = 500
+
+# 最小時間區間 (小時)，避免無限遞迴
+MIN_INTERVAL_HOURS = 1
+
+# 最大重試次數
+MAX_RETRIES = 3
 
 
 class HyperliquidFetcher(BaseFetcher):
@@ -33,6 +42,83 @@ class HyperliquidFetcher(BaseFetcher):
         self.info = Info(base_url=base_url, skip_ws=True)
         self._log_info("Hyperliquid fetcher initialized")
 
+    async def _fetch_fills_for_interval(
+        self,
+        wallet_address: str,
+        interval_start: datetime,
+        interval_end: datetime,
+    ) -> List[Dict[str, Any]]:
+        """
+        抓取單一時間區間的 fills，若回傳量達上限則自動切分區間重試
+
+        Args:
+            wallet_address: 錢包地址
+            interval_start: 區間開始時間 (UTC)
+            interval_end: 區間結束時間 (UTC)
+
+        Returns:
+            fills 列表 (raw API response dicts)
+        """
+        start_ts = int(interval_start.timestamp() * 1000)
+        end_ts = int(interval_end.timestamp() * 1000)
+
+        loop = asyncio.get_running_loop()
+
+        for attempt in range(MAX_RETRIES):
+            try:
+                fills = await loop.run_in_executor(
+                    None,
+                    lambda s=start_ts, e=end_ts: self.info.user_fills_by_time(
+                        wallet_address, s, e
+                    ),
+                )
+                break
+            except Exception as e:
+                if attempt < MAX_RETRIES - 1:
+                    self._log_warning(
+                        f"抓取失敗，重試 {attempt + 1}/{MAX_RETRIES}",
+                        wallet=wallet_address[:10] + "...",
+                        error=str(e),
+                    )
+                    await asyncio.sleep(1 * (attempt + 1))
+                else:
+                    self._log_error(
+                        f"抓取失敗，已達最大重試次數",
+                        wallet=wallet_address[:10] + "...",
+                        period=f"{interval_start.date()} ~ {interval_end.date()}",
+                        error=str(e),
+                    )
+                    return []
+
+        if not fills:
+            return []
+
+        # 若回傳量達上限且區間仍可切分，則遞迴切分
+        if len(fills) >= FILLS_LIMIT:
+            interval_hours = (interval_end - interval_start).total_seconds() / 3600
+            if interval_hours > MIN_INTERVAL_HOURS:
+                mid = interval_start + (interval_end - interval_start) / 2
+                self._log_info(
+                    f"回傳量達上限 ({len(fills)})，切分區間重試",
+                    wallet=wallet_address[:10] + "...",
+                    period=f"{interval_start.date()} ~ {interval_end.date()}",
+                )
+                first_half = await self._fetch_fills_for_interval(
+                    wallet_address, interval_start, mid
+                )
+                await asyncio.sleep(0.2)
+                second_half = await self._fetch_fills_for_interval(
+                    wallet_address, mid, interval_end
+                )
+                return first_half + second_half
+            else:
+                self._log_warning(
+                    f"區間已達最小值仍有 {len(fills)} 筆，可能有遺漏",
+                    wallet=wallet_address[:10] + "...",
+                )
+
+        return fills
+
     async def fetch_trades(
         self,
         wallet_address: str,
@@ -43,7 +129,7 @@ class HyperliquidFetcher(BaseFetcher):
         """
         抓取指定時間範圍內的交易紀錄
 
-        使用時間分段方式抓取，避免單次請求返回過多資料
+        使用時間分段方式抓取，若單一區間回傳量達上限則自動切分重試
 
         Args:
             wallet_address: 錢包地址
@@ -69,59 +155,26 @@ class HyperliquidFetcher(BaseFetcher):
                 end_time,
             )
 
-            # 轉換為毫秒時間戳
-            start_ts = int(current_start.timestamp() * 1000)
-            end_ts = int(current_end.timestamp() * 1000)
+            fills = await self._fetch_fills_for_interval(
+                wallet_address, current_start, current_end
+            )
 
-            try:
-                # 使用同步 API (hyperliquid-python-sdk 是同步的)
-                # 在 async 環境中使用 run_in_executor
-                loop = asyncio.get_event_loop()
-                fills = await loop.run_in_executor(
-                    None,
-                    lambda: self.info.user_fills_by_time(
-                        wallet_address, start_ts, end_ts
-                    ),
-                )
-
-                if fills:
-                    # 轉換為統一格式
-                    for fill in fills:
-                        trade = HyperliquidTrade.from_api_response(
-                            wallet_address, fill
-                        )
-                        all_trades.append(trade.to_dict())
-
-                    self._log_info(
-                        f"抓取成功",
-                        wallet=wallet_address[:10] + "...",
-                        period=f"{current_start.date()} ~ {current_end.date()}",
-                        count=len(fills),
+            if fills:
+                for fill in fills:
+                    trade = HyperliquidTrade.from_api_response(
+                        wallet_address, fill
                     )
+                    all_trades.append(trade.to_dict())
 
-                    # 如果返回的資料量很大，可能還有更多，縮短時間區間
-                    if len(fills) >= 500:
-                        self._log_warning(
-                            f"返回資料量大，可能有遺漏",
-                            count=len(fills),
-                        )
-
-                # 移動到下一個時間區間
-                current_start = current_end
-
-                # Rate limit 保護
-                await asyncio.sleep(0.2)
-
-            except Exception as e:
-                self._log_error(
-                    f"抓取失敗",
+                self._log_info(
+                    f"抓取成功",
                     wallet=wallet_address[:10] + "...",
                     period=f"{current_start.date()} ~ {current_end.date()}",
-                    error=str(e),
+                    count=len(fills),
                 )
-                # 發生錯誤時仍然繼續下一個時間區間
-                current_start = current_end
-                await asyncio.sleep(1)
+
+            current_start = current_end
+            await asyncio.sleep(0.2)
 
         self._log_info(
             f"完成抓取",
@@ -147,12 +200,12 @@ class HyperliquidFetcher(BaseFetcher):
             交易紀錄列表
         """
         if since is None:
-            since = datetime(2025, 1, 1)
+            since = datetime(2025, 1, 1, tzinfo=timezone.utc)
 
         return await self.fetch_trades(
             wallet_address=wallet_address,
             start_time=since,
-            end_time=datetime.now(),
+            end_time=datetime.now(timezone.utc),
         )
 
     async def close(self):

@@ -20,7 +20,7 @@ import argparse
 import logging
 import os
 import sys
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional, List, Dict, Any
 
 from motor.motor_asyncio import AsyncIOMotorClient
@@ -42,7 +42,7 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # 預設開始抓取時間
-DEFAULT_START_DATE = datetime(2025, 1, 1)
+DEFAULT_START_DATE = datetime(2025, 1, 1, tzinfo=timezone.utc)
 
 # 每個用戶間的延遲 (秒)
 USER_DELAY_SECONDS = float(os.getenv("FETCH_DELAY_SECONDS", "0.5"))
@@ -128,7 +128,7 @@ class TradeFetcher:
             query["wallet_address"] = wallet_address
 
         cursor = self.mongo_db.users.find(query)
-        users = await cursor.to_list(length=10000)
+        users = await cursor.to_list(length=None)
         logger.info(f"取得 {len(users)} 位用戶")
         return users
 
@@ -166,7 +166,7 @@ class TradeFetcher:
             trades = await self.hl_fetcher.fetch_trades(
                 wallet_address=wallet_address,
                 start_time=start_time,
-                end_time=datetime.now(),
+                end_time=datetime.now(timezone.utc),
             )
 
             if not trades:
@@ -207,8 +207,8 @@ class TradeFetcher:
             新增的交易紀錄數
         """
         wallet_address = user.get("wallet_address")
-        orderly_key = user.get("user_api_key")
-        orderly_secret = user.get("user_api_secret")
+        orderly_key = user.get("api_key")
+        orderly_secret = user.get("api_secret")
         account_id = user.get("_id")  # 使用 user_id 作為 account_id
 
         if not wallet_address:
@@ -238,7 +238,7 @@ class TradeFetcher:
             trades = await self.orderly_fetcher.fetch_trades(
                 wallet_address=wallet_address,
                 start_time=start_time,
-                end_time=datetime.now(),
+                end_time=datetime.now(timezone.utc),
                 orderly_key=orderly_key,
                 orderly_secret=orderly_secret,
                 account_id=account_id,
